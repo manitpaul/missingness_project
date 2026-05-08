@@ -1,3 +1,6 @@
+# Main source file for combined sensitivity simulation.
+# This file is self-contained and supersedes combined_test_simulation.R.
+
 # Combined matched-pair / cross-fit AIPW sensitivity test
 # ------------------------------------------------------
 # This script implements Algorithm 1 from the draft for data consisting of
@@ -1020,3 +1023,386 @@ run_requested_study <- function(
 #   point_size = 2.2
 # )
 # print(p2)
+
+# ---- New-variant overrides/additions ----
+
+build_aipw_data_with_complete_pairs <- function(missing_obj) {
+  pair_df <- missing_obj$categorized_pairs
+  complete_ids <- missing_obj$complete_pairs$pair_id
+  complete_rows <- pair_df[pair_df$pair_id %in% complete_ids, , drop = FALSE]
+
+  complete_treated <- data.frame(
+    T = 1,
+    Y = complete_rows$Y_t,
+    Z1 = complete_rows$t_Z1,
+    Z2 = complete_rows$t_Z2,
+    Z3 = complete_rows$t_Z3,
+    Z4 = complete_rows$t_Z4,
+    Z5 = complete_rows$t_Z5,
+    Z6 = complete_rows$t_Z6,
+    Z7 = complete_rows$t_Z7,
+    Z8 = complete_rows$t_Z8,
+    Z9 = complete_rows$t_Z9,
+    Z10 = complete_rows$t_Z10,
+    Z11 = complete_rows$t_Z11
+  )
+  complete_control <- data.frame(
+    T = 0,
+    Y = complete_rows$Y_c,
+    Z1 = complete_rows$c_Z1,
+    Z2 = complete_rows$c_Z2,
+    Z3 = complete_rows$c_Z3,
+    Z4 = complete_rows$c_Z4,
+    Z5 = complete_rows$c_Z5,
+    Z6 = complete_rows$c_Z6,
+    Z7 = complete_rows$c_Z7,
+    Z8 = complete_rows$c_Z8,
+    Z9 = complete_rows$c_Z9,
+    Z10 = complete_rows$c_Z10,
+    Z11 = complete_rows$c_Z11
+  )
+
+  base_cols <- c("T", "Y", paste0("Z", 1:11))
+  incomplete_obs <- missing_obj$incomplete_data[, base_cols, drop = FALSE]
+  aipw_data <- rbind(complete_treated[, base_cols, drop = FALSE], complete_control[, base_cols, drop = FALSE], incomplete_obs)
+  rownames(aipw_data) <- NULL
+  aipw_data
+}
+
+combined_partial_missing_test_new <- function(
+  complete_pairs,
+  aipw_data,
+  n_complete,
+  n1,
+  n2,
+  alpha = 0.05,
+  Gamma_M = 1,
+  Gamma_A = 1,
+  match_side = c("two.sided", "right", "left"),
+  incomplete_side = c("two.sided", "right", "left"),
+  K = 5,
+  x_cols = NULL,
+  score = c("huber", "sign", "identity"),
+  huber_c = 1.345,
+  seed = NULL
+) {
+  match_side <- match.arg(match_side)
+  incomplete_side <- match.arg(incomplete_side)
+  score <- match.arg(score)
+  if (is.null(x_cols)) x_cols <- setdiff(names(aipw_data), c("Y", "T"))
+
+  pM <- matched_sensitivity_pvalue(
+    complete_pairs = complete_pairs,
+    Gamma = Gamma_M,
+    side = match_side,
+    score = score,
+    huber_c = huber_c,
+    mc_reps = 0,
+    seed = seed
+  )
+  pA <- crossfit_aipw_sensitivity(
+    incomplete_data = aipw_data,
+    Gamma = Gamma_A,
+    side = incomplete_side,
+    K = K,
+    x_cols = x_cols,
+    seed = if (is.null(seed)) NULL else seed + 99L
+  )
+
+  denom <- n_complete + n1 + n2
+  w1 <- if (denom > 0) n_complete / denom else 0.5
+  w2 <- if (denom > 0) (n1 + n2) / denom else 0.5
+  ratio1 <- if (w1 > 0) pM$p_value / w1 else Inf
+  ratio2 <- if (w2 > 0) pA$p_value / w2 else Inf
+  p_comb <- min(1, min(ratio1, ratio2))
+
+  list(
+    p_value = p_comb,
+    reject = as.logical(p_comb <= alpha),
+    alpha = alpha,
+    Gamma_M = Gamma_M,
+    Gamma_A = Gamma_A,
+    p_match = pM,
+    p_incomplete = pA,
+    match_side = match_side,
+    incomplete_side = incomplete_side,
+    weights = c(w1 = w1, w2 = w2)
+  )
+}
+
+run_one_experiment_new <- function(
+  eta,
+  N = 2000,
+  alpha = 0.05,
+  Gamma_M = 1,
+  Gamma_A = 1,
+  gamma0_missing = -0.075,
+  match_side = "two.sided",
+  incomplete_side = "two.sided",
+  K = 5,
+  score = "huber",
+  huber_c = 1.345,
+  seed = NULL
+) {
+  pop <- simulate_population(N = N, eta = eta, seed = seed)
+  pairs <- build_optmatch_pairs(pop)
+  missing_obj <- induce_pair_level_missingness(
+    pairs,
+    gamma0_missing = gamma0_missing,
+    seed = if (is.null(seed)) NULL else seed + 1L
+  )
+
+  complete_pairs <- missing_obj$complete_pairs
+  aipw_data <- build_aipw_data_with_complete_pairs(missing_obj)
+  x_cols <- paste0("Z", 2:11)
+
+  n <- missing_obj$counts[["n"]]
+  n1 <- missing_obj$counts[["n1"]]
+  n2 <- missing_obj$counts[["n2"]]
+
+  proposed <- combined_partial_missing_test_new(
+    complete_pairs = complete_pairs,
+    aipw_data = aipw_data,
+    n_complete = n,
+    n1 = n1,
+    n2 = n2,
+    alpha = alpha,
+    Gamma_M = Gamma_M,
+    Gamma_A = Gamma_A,
+    match_side = match_side,
+    incomplete_side = incomplete_side,
+    K = K,
+    x_cols = x_cols,
+    score = score,
+    huber_c = huber_c,
+    seed = if (is.null(seed)) NULL else seed + 2L
+  )
+
+  match_only <- matched_sensitivity_pvalue(
+    complete_pairs = complete_pairs,
+    Gamma = Gamma_M,
+    side = match_side,
+    score = score,
+    huber_c = huber_c,
+    mc_reps = 0,
+    seed = if (is.null(seed)) NULL else seed + 3L
+  )
+
+  list(
+    eta = eta,
+    proposed_p = proposed$p_value,
+    proposed_reject = as.numeric(proposed$p_value <= alpha),
+    match_p = match_only$p_value,
+    match_reject = as.numeric(match_only$p_value <= alpha),
+    counts = missing_obj$counts
+  )
+}
+
+run_eta_simulation_new <- function(
+  eta_grid = seq(-1, 1, by = 0.25),
+  n_rep = 200,
+  N = 2000,
+  alpha = 0.05,
+  Gamma_M = 1,
+  Gamma_A = 1,
+  gamma0_missing = -0.075,
+  match_side = "two.sided",
+  incomplete_side = "two.sided",
+  K = 5,
+  score = "huber",
+  huber_c = 1.345,
+  base_seed = 12345,
+  n_cores = detect_available_cores(),
+  show_progress = TRUE,
+  save_path = NULL
+) {
+  assert_required_packages()
+
+  grid_df <- expand.grid(
+    eta_idx = seq_along(eta_grid),
+    replication = seq_len(n_rep),
+    KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE
+  )
+  n_tasks <- nrow(grid_df)
+  n_cores <- as.integer(n_cores)
+  if (!is.finite(n_cores) || n_cores < 1L) n_cores <- 1L
+  n_cores <- min(n_cores, n_tasks)
+  batch_size <- max(1L, 2L * n_cores)
+  records <- vector("list", n_tasks)
+
+  report_progress <- function(done_tasks) {
+    if (!isTRUE(show_progress)) return(invisible(NULL))
+    cat(sprintf("Progress: %d/%d (%.1f%%)\n", done_tasks, n_tasks, 100 * done_tasks / n_tasks))
+    flush.console()
+  }
+
+  run_task <- function(task_id) {
+    j <- grid_df$eta_idx[task_id]
+    r <- grid_df$replication[task_id]
+    eta <- eta_grid[j]
+    seed_here <- base_seed + 100000L * j + r
+    one <- NULL
+    err_msg <- NULL
+    for (attempt in 0:4) {
+      seed_try <- seed_here + attempt * 10000000L
+      one <- tryCatch(
+        run_one_experiment_new(
+          eta = eta,
+          N = N,
+          alpha = alpha,
+          Gamma_M = Gamma_M,
+          Gamma_A = Gamma_A,
+          gamma0_missing = gamma0_missing,
+          match_side = match_side,
+          incomplete_side = incomplete_side,
+          K = K,
+          score = score,
+          huber_c = huber_c,
+          seed = seed_try
+        ),
+        error = function(e) {
+          err_msg <<- conditionMessage(e)
+          NULL
+        }
+      )
+      if (!is.null(one)) break
+    }
+    if (is.null(one)) {
+      stop(sprintf("Task failed for eta=%s replication=%s: %s", eta, r, err_msg), call. = FALSE)
+    }
+    data.frame(
+      eta = eta,
+      replication = r,
+      method = c("Proposed test", "Matching test"),
+      p_value = c(one$proposed_p, one$match_p),
+      reject = c(one$proposed_reject, one$match_reject),
+      n_complete = one$counts[["n"]],
+      n_treated_only = one$counts[["n1"]],
+      n_control_only = one$counts[["n2"]]
+    )
+  }
+
+  if (.Platform$OS.type == "unix" && n_cores > 1L) {
+    for (start_idx in seq.int(1L, n_tasks, by = batch_size)) {
+      end_idx <- min(start_idx + batch_size - 1L, n_tasks)
+      task_chunk <- seq.int(start_idx, end_idx)
+      records[task_chunk] <- parallel::mclapply(task_chunk, run_task, mc.cores = n_cores, mc.preschedule = TRUE)
+      report_progress(end_idx)
+    }
+  } else {
+    for (task_id in seq_len(n_tasks)) {
+      records[[task_id]] <- run_task(task_id)
+      report_progress(task_id)
+    }
+  }
+
+  trial_df <- do.call(rbind, records)
+  trial_df <- as.data.frame(trial_df, stringsAsFactors = FALSE)
+  expected_cols <- c("eta", "replication", "method", "p_value", "reject", "n_complete", "n_treated_only", "n_control_only")
+  if (ncol(trial_df) == length(expected_cols) && !all(expected_cols %in% names(trial_df))) {
+    names(trial_df) <- expected_cols
+  }
+  if (!("reject" %in% names(trial_df)) && ("p_value" %in% names(trial_df))) {
+    trial_df$reject <- as.numeric(as.numeric(trial_df$p_value) <= alpha)
+  }
+  if ("eta" %in% names(trial_df)) trial_df$eta <- as.numeric(trial_df$eta)
+  if ("p_value" %in% names(trial_df)) trial_df$p_value <- as.numeric(trial_df$p_value)
+  if ("reject" %in% names(trial_df)) trial_df$reject <- as.numeric(trial_df$reject)
+
+  summary_df <- summarize_rejection_rates(trial_df, conf_level = 0.90)
+
+  out <- list(
+    trials = trial_df,
+    summary = summary_df,
+    settings = list(
+      eta_grid = eta_grid,
+      n_rep = n_rep,
+      N = N,
+      alpha = alpha,
+      Gamma_M = Gamma_M,
+      Gamma_A = Gamma_A,
+      gamma0_missing = gamma0_missing,
+      match_side = match_side,
+      incomplete_side = incomplete_side,
+      K = K,
+      score = score,
+      huber_c = huber_c,
+      base_seed = base_seed,
+      n_cores = n_cores,
+      show_progress = show_progress
+    )
+  )
+
+  if (!is.null(save_path)) saveRDS(out, file = save_path)
+  out
+}
+
+plot_rejection_rates_new <- function(results_obj, ...) {
+  plot_rejection_rates(results_obj, ...)
+}
+
+run_requested_study_new <- function(
+  eta_grid = seq(-1, 1, by = 0.25),
+  n_rep = 200,
+  N = 2000,
+  alpha = 0.05,
+  gamma0_missing = -0.075,
+  K = 5,
+  base_seed = 12345,
+  n_cores = detect_available_cores(),
+  show_progress = TRUE,
+  save_path = "R_files/combined_test_results_new.rds"
+) {
+  run_eta_simulation_new(
+    eta_grid = eta_grid,
+    n_rep = n_rep,
+    N = N,
+    alpha = alpha,
+    Gamma_M = 1,
+    Gamma_A = 1,
+    gamma0_missing = gamma0_missing,
+    match_side = "two.sided",
+    incomplete_side = "two.sided",
+    K = K,
+    score = "huber",
+    huber_c = 1.345,
+    base_seed = base_seed,
+    n_cores = n_cores,
+    show_progress = show_progress,
+    save_path = save_path
+  )
+}
+
+regenerate_plot_from_cache_new <- function(
+  cache_path = "R_files/combined_test_results_new.rds",
+  output_pdf = "PDF_files/rejection_rates_plot_new.pdf",
+  width = 10,
+  height = 6
+) {
+  results <- readRDS(cache_path)
+  p <- plot_rejection_rates_new(results, alpha_line = 0.05)
+  ggplot2::ggsave(filename = output_pdf, plot = p, width = width, height = height, units = "in")
+  invisible(p)
+}
+
+# Example usage:
+# res <- run_requested_study_new(
+#   eta_grid = seq(-1, 1, by = 0.25),
+#   n_rep = 200,
+#   N = 2000,
+#   alpha = 0.05,
+#   gamma0_missing = -0.075,
+#   K = 5,
+#   n_cores = detect_available_cores(),
+#   save_path = "R_files/combined_test_results_new.rds"
+# )
+# p <- plot_rejection_rates_new(res, alpha_line = 0.05)
+# ggplot2::ggsave("PDF_files/rejection_rates_plot_new.pdf", p, width = 10, height = 6, units = "in")
+# # Later, regenerate without rerunning simulation:
+# regenerate_plot_from_cache_new(
+#   cache_path = "R_files/combined_test_results_new.rds",
+#   output_pdf = "PDF_files/rejection_rates_plot_new.pdf",
+#   width = 10,
+#   height = 6
+# )

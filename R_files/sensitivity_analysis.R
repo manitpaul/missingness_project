@@ -1,13 +1,13 @@
 # Sensitivity analysis under unobserved covariates Z9, Z10, Z11
 # --------------------------------------------------------------
-# This script reuses core functions from combined_test_simulation.R and runs:
+# This script reuses core functions from combined_test_simulation_new.R and runs:
 #   - eta = 0 (null)
 #   - Gamma_M = Gamma_A = Gamma
 #   - Gamma grid in {1, 3, 5, 9, 11}
 # while creating matched pairs and fitting nuisance models using only observed
 # covariates Z2..Z8 (Z9..Z11 treated as unobserved).
 
-source("R_files/combined_test_simulation.R")
+source("R_files/combined_test_simulation_new.R")
 
 build_optmatch_pairs_partial_obs <- function(
   pop_df,

@@ -6,7 +6,7 @@
 # over Gamma in {1, 1.1, 1.2, 1.3, 1.4, 1.5},
 # with 90% confidence bands.
 
-source("R_files/combined_test_simulation.R")
+source("R_files/combined_test_simulation_new.R")
 source("R_files/sensitivity_analysis.R")
 
 run_one_sensitivity_power_experiment <- function(
